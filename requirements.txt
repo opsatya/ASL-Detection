@@ -1,0 +1,12 @@
+opencv-python
+cvzone
+numpy
+tensorflow
+keras
+pyttsx3
+pyenchant
+Pillow
+flask
+flask-cors
+python-dotenv
+gunicorn
