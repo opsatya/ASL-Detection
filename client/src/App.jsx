@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Camera as CameraIcon, Square } from 'lucide-react';
 import { useMediaPipeHands } from './hooks/useMediaPipeHands';
 import { CameraView } from './components/CameraView';
@@ -73,6 +73,10 @@ const ASLDetectionApp = () => {
   const [detectedText, setDetectedText] = useState('');
   const [autoSend, setAutoSend] = useState(false);
   const [landmarks, setLandmarks] = useState(null);
+  const [recent, setRecent] = useState([]); // recent predictions
+  const [stableChar, setStableChar] = useState('');
+  const [stableCount, setStableCount] = useState(0);
+  const [lastAppendTime, setLastAppendTime] = useState(0);
 
   const handleResults = useCallback((lm) => {
     setLandmarks(lm);
@@ -100,13 +104,73 @@ const ASLDetectionApp = () => {
       setConfidence(result.confidence);
       
       // Add to detected text
-      setDetectedText(prev => prev + result.prediction);
+      accumulatePrediction(result.prediction, result.confidence);
     } catch (error) {
       console.error('Prediction failed:', error);
     } finally {
       setIsProcessing(false);
     }
   };
+
+  // Stabilization and word formation
+  const MIN_CONFIDENCE = 0.6;
+  const REQUIRED_STABLE_FRAMES = 3; // consecutive matches required
+  const APPEND_DEBOUNCE_MS = 500; // min gap between same letters
+  const SPACE_TIMEOUT_MS = 1500; // if no confident char for this long, append space (once)
+  const spaceFlagRef = useRef(false);
+
+  const accumulatePrediction = (ch, conf) => {
+    const now = Date.now();
+    setRecent(prev => {
+      const next = [...prev, { ch, conf, t: now }].slice(-15);
+      return next;
+    });
+
+    const isConfident = conf >= MIN_CONFIDENCE && ch && ch !== 'Uncertain' && ch !== 'Error';
+
+    if (!isConfident) {
+      // handle space insertion after timeout
+      const sinceLast = now - lastAppendTime;
+      if (sinceLast > SPACE_TIMEOUT_MS && !spaceFlagRef.current && detectedText.trim().length > 0) {
+        setDetectedText(prev => (prev.endsWith(' ') ? prev : prev + ' '));
+        setLastAppendTime(now);
+        spaceFlagRef.current = true;
+      }
+      setStableChar('');
+      setStableCount(0);
+      return;
+    }
+
+    // reset space flag on confident detection
+    spaceFlagRef.current = false;
+
+    if (ch === stableChar) {
+      const nextCount = stableCount + 1;
+      setStableCount(nextCount);
+      if (nextCount >= REQUIRED_STABLE_FRAMES) {
+        // append if debounced
+        if (now - lastAppendTime >= APPEND_DEBOUNCE_MS) {
+          setDetectedText(prev => prev + ch);
+          setLastAppendTime(now);
+          setStableCount(0); // require re-stabilization for next same char
+        }
+      }
+    } else {
+      setStableChar(ch);
+      setStableCount(1);
+    }
+  };
+
+  // Continuous auto-predict loop
+  useEffect(() => {
+    if (!autoSend) return;
+    const interval = setInterval(() => {
+      if (!isProcessing) {
+        handlePredict();
+      }
+    }, 350); // ~3 fps
+    return () => clearInterval(interval);
+  }, [autoSend, isProcessing]);
 
   const handleClear = () => {
     setDetectedText('');
